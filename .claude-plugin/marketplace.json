@@ -1,0 +1,18 @@
+{
+  "name": "claude-skills",
+  "owner": {
+    "name": "Peter Kepes"
+  },
+  "metadata": {
+    "description": "Claude Code skills by Peter Kepes, packaged as individually installable plugins."
+  },
+  "plugins": [
+    {
+      "name": "session-cost-report",
+      "source": "./plugins/session-cost-report",
+      "description": "Per-session token, cost and time report for Claude Code projects, with Sonnet / Opus / Fable cost comparison.",
+      "category": "productivity",
+      "keywords": ["tokens", "cost", "usage", "report", "sessions"]
+    }
+  ]
+}

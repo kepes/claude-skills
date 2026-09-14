@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Blocks API keys / tokens / passwords from being committed.
+# If gitleaks is not installed it warns but does not block (brew install gitleaks).
+# Enable once per clone: git config core.hooksPath githooks
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks git --pre-commit --staged --redact --verbose
+else
+  echo "⚠️  gitleaks not installed — secret scan skipped. Install: brew install gitleaks" >&2
+fi

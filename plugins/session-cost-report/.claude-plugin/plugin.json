@@ -1,0 +1,11 @@
+{
+  "name": "session-cost-report",
+  "version": "1.0.0",
+  "description": "Per-session token, cost and time report for Claude Code projects: tokens used, what each session would cost on Sonnet 5 / Opus 5 / Fable 5.1, the real mixed cost including subagents, wall-clock and estimated active working time.",
+  "author": {
+    "name": "Peter Kepes"
+  },
+  "homepage": "https://github.com/kepes/claude-skills/tree/main/plugins/session-cost-report",
+  "repository": "https://github.com/kepes/claude-skills",
+  "keywords": ["tokens", "cost", "usage", "report", "sessions"]
+}
