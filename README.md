@@ -10,6 +10,7 @@ Each plugin installs on its own — take only what you need.
   - [session-cost-report](#session-cost-report)
 - [Repository layout](#repository-layout)
 - [Local development](#local-development)
+- [License](#license)
 
 ## Installation
 
@@ -96,3 +97,18 @@ ln -s "$PWD/plugins/session-cost-report/skills/session-cost-report" ~/.claude/sk
 ```
 
 Edits in the repository are then live in every Claude Code session.
+
+Enable the secret-scanning pre-commit hook once per clone (needs `brew install gitleaks`):
+
+```bash
+git config core.hooksPath githooks
+```
+
+CI (`.github/workflows/ci.yml`) runs on every push and pull request to `main`: it validates all
+JSON files and the marketplace → `plugin.json` mapping, checks that every `SKILL.md` has a `name`
+and `description` in its frontmatter, byte-compiles the Python scripts and runs a `--help` smoke
+test on Python 3.10, and scans the full git history with gitleaks.
+
+## License
+
+[MIT](LICENSE) © Peter Kepes

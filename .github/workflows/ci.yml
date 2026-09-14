@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Manifests, skills & scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10" # minimum supported version (README)
+
+      - name: Validate JSON files and marketplace entries
+        run: |
+          python - <<'EOF'
+          import json, pathlib, sys
+
+          errors = []
+          for path in pathlib.Path(".").rglob("*.json"):
+              if ".git" in path.parts:
+                  continue
+              try:
+                  json.loads(path.read_text(encoding="utf-8"))
+              except ValueError as e:
+                  errors.append(f"{path}: invalid JSON ({e})")
+
+          marketplace = json.loads(pathlib.Path(".claude-plugin/marketplace.json").read_text(encoding="utf-8"))
+          for plugin in marketplace.get("plugins", []):
+              manifest = pathlib.Path(plugin["source"]) / ".claude-plugin" / "plugin.json"
+              if not manifest.is_file():
+                  errors.append(f"{plugin['name']}: missing {manifest}")
+              elif json.loads(manifest.read_text(encoding="utf-8")).get("name") != plugin["name"]:
+                  errors.append(f"{manifest}: name does not match marketplace entry '{plugin['name']}'")
+
+          print("\n".join(errors) or "JSON OK")
+          sys.exit(bool(errors))
+          EOF
+
+      - name: Check SKILL.md frontmatter
+        run: |
+          python - <<'EOF'
+          import pathlib, sys
+
+          errors = []
+          skills = sorted(pathlib.Path("plugins").glob("*/skills/*/SKILL.md"))
+          if not skills:
+              errors.append("no SKILL.md found under plugins/*/skills/")
+          for path in skills:
+              lines = path.read_text(encoding="utf-8").splitlines()
+              if not lines or lines[0] != "---" or "---" not in lines[1:]:
+                  errors.append(f"{path}: missing frontmatter block")
+                  continue
+              header = lines[1:lines.index("---", 1)]
+              for key in ("name", "description"):
+                  if not any(l.startswith(f"{key}:") and l[len(key) + 1:].strip() for l in header):
+                      errors.append(f"{path}: frontmatter '{key}' missing or empty")
+
+          print("\n".join(errors) or f"{len(skills)} SKILL.md OK")
+          sys.exit(bool(errors))
+          EOF
+
+      - name: Python smoke test
+        run: |
+          find plugins -name '*.py' -print0 | xargs -0 -r python -m py_compile
+          python plugins/session-cost-report/skills/session-cost-report/scripts/report.py --help
+
+  gitleaks:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    env:
+      GITLEAKS_VERSION: 8.30.1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # scan the full history
+
+      - name: Install gitleaks
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+
+      - name: Scan git history
+        run: gitleaks git --redact --verbose
