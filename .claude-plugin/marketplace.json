@@ -13,6 +13,13 @@
       "description": "Per-session token, cost and time report for Claude Code projects, with Sonnet / Opus / Fable cost comparison.",
       "category": "productivity",
       "keywords": ["tokens", "cost", "usage", "report", "sessions"]
+    },
+    {
+      "name": "ste100-style",
+      "source": "./plugins/ste100-style",
+      "description": "Output style: all prose by the ASD-STE100 Simplified Technical English rules, in the language of the user.",
+      "category": "productivity",
+      "keywords": ["output-style", "writing", "simplified-technical-english", "ste100"]
     }
   ]
 }

@@ -8,6 +8,7 @@ Each plugin installs on its own — take only what you need.
 - [Installation](#installation)
 - [Plugins](#plugins)
   - [session-cost-report](#session-cost-report)
+  - [ste100-style](#ste100-style)
 - [Repository layout](#repository-layout)
 - [Local development](#local-development)
 - [License](#license)
@@ -77,6 +78,16 @@ python3 .../report.py --all-projects --since 2d --sort cost -n all --markdown
 - Costs are API-equivalent list prices (see the pricing table in `SKILL.md`), useful for comparing
   models, not for predicting a subscription invoice. Update `RATES` in `report.py` when prices change.
 
+### ste100-style
+
+An [output style](https://docs.claude.com/en/docs/claude-code/output-styles) that makes Claude
+write all prose by the ASD-STE100 Simplified Technical English rules: short sentences, simple
+vocabulary, active voice, one instruction per sentence, the result first. It answers in the
+language of the user and has extra rules for Hungarian. Code, commands, paths and log output
+stay unchanged.
+
+After installing the plugin, pick it with `/output-style` (or set `outputStyle` in your settings).
+
 ## Repository layout
 
 ```
@@ -85,6 +96,7 @@ plugins/<plugin>/
   .claude-plugin/plugin.json           # plugin manifest: name, version, description
   skills/<skill>/SKILL.md              # the skill itself (+ scripts/, references/)
   agents/                              # optional subagents the skills depend on
+  output-styles/<style>.md             # optional output styles
 ```
 
 ## Local development
@@ -94,6 +106,12 @@ skills directory instead of installing the plugin (installing both would registe
 
 ```bash
 ln -s "$PWD/plugins/session-cost-report/skills/session-cost-report" ~/.claude/skills/session-cost-report
+```
+
+Output styles work the same way, with a file symlink:
+
+```bash
+ln -s "$PWD/plugins/ste100-style/output-styles/ste100.md" ~/.claude/output-styles/ste100.md
 ```
 
 Edits in the repository are then live in every Claude Code session.

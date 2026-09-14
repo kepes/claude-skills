@@ -1,0 +1,12 @@
+{
+  "name": "ste100-style",
+  "version": "1.0.0",
+  "description": "Output style that writes all prose by the ASD-STE100 Simplified Technical English rules: short sentences, simple vocabulary, active voice, one instruction per sentence, in the language of the user.",
+  "author": {
+    "name": "Peter Kepes"
+  },
+  "homepage": "https://github.com/kepes/claude-skills/tree/main/plugins/ste100-style",
+  "repository": "https://github.com/kepes/claude-skills",
+  "keywords": ["output-style", "writing", "simplified-technical-english", "ste100"],
+  "outputStyles": "./output-styles/"
+}
