@@ -33,7 +33,7 @@ without the plugin system.
 ### session-cost-report
 
 Per-session token, cost and time summary for a Claude Code project. For each session it shows
-the tokens used, what the session would have cost on Sonnet 5 / Opus 5 / Fable 5.1 (marking the
+the tokens used, what the session would have cost on Sonnet 5 / Opus 5.5 / Fable 5.1 (marking the
 model it actually ran on), the real mixed cost including subagents, the wall-clock span and an
 estimated active working time.
 

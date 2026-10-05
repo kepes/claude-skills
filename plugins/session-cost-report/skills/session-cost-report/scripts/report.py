@@ -9,7 +9,7 @@ Usage is summed per API response, NOT per log record: one response is logged onc
 per content block and every one of those records repeats the same cumulative usage,
 so the records of one message id are counted once (see dedupe() below).
 For each session it shows the API-equivalent cost on three models (Sonnet 5 /
-Opus 5 / Fable 5.1), marks the session's real main model, and shows the actual
+Opus 5.5 / Fable 5.1), marks the session's real main model, and shows the actual
 mixed cost (main model + subagents each at their own rate, version-aware).
 
 The report is scoped to a time window — **today** by default (local midnight → now),
@@ -36,7 +36,7 @@ ACTIVE (estimated working time = the span minus idle gaps longer than --idle-gap
 logs store no true per-request duration, so ACTIVE is an estimate from the event timeline.
 
 Cost is API-equivalent, estimated at list pricing (cache reads at 10% of input —
-2.5% on Fable 5.1 / Mythos 5.1 —, cache writes at 1.25x for 5m TTL / 2x for 1h
+5% on Opus 5.5, 2.5% on Fable 5.1 / Mythos 5.1 —, cache writes at 1.25x for 5m TTL / 2x for 1h
 TTL). Actual billing is covered by
 the Max/Pro subscription — these numbers exist to compare model burn per session.
 """
@@ -52,15 +52,17 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 # --- Pricing: USD per single token (list price / 1e6) ---------------------------
-# Source: platform.claude.com/docs/en/about-claude/pricing (checked 2026-09-06).
-# A key is a PRICE TIER, not a family: Sonnet 5 costs less than Sonnet 4.6, Opus 4.1
-# costs 3x Opus 5, and Fable 5.1 reads its cache at 2.5% of input while every other
-# model pays 10%. "read" is the cache-read multiplier of that tier.
+# Source: platform.claude.com/docs/en/about-claude/pricing (checked 2026-09-24).
+# A key is a PRICE TIER, not a family: Sonnet 5 costs less than Sonnet 4.6, Opus 5.5
+# costs less than Opus 5, Opus 4.1 costs 3x Opus 5, Opus 5.5 reads its cache at 5% and
+# Fable 5.1 at 2.5% of input, while every other model pays 10%. "read" is the cache-read multiplier of that tier.
 RATES = {
     "fable-5-1": {"in": 10.0 / 1e6, "out": 50.0 / 1e6, "read": 0.025,
                   "family": "fable", "label": "Fable 5.1"},
     "fable-5":   {"in": 10.0 / 1e6, "out": 50.0 / 1e6, "read": 0.10,
                   "family": "fable", "label": "Fable 5"},
+    "opus-5-5":  {"in":  4.0 / 1e6, "out": 20.0 / 1e6, "read": 0.05,
+                  "family": "opus", "label": "Opus 5.5"},
     "opus-5":    {"in":  5.0 / 1e6, "out": 25.0 / 1e6, "read": 0.10,
                   "family": "opus", "label": "Opus 5"},
     "opus-4":    {"in":  5.0 / 1e6, "out": 25.0 / 1e6, "read": 0.10,
@@ -74,7 +76,7 @@ RATES = {
     "haiku-4-5": {"in":  1.0 / 1e6, "out":  5.0 / 1e6, "read": 0.10,
                   "family": "haiku", "label": "Haiku 4.5"},
 }
-DEFAULT_KEY = "opus-5"  # unknown / missing model id -> price as the current Opus
+DEFAULT_KEY = "opus-5-5"  # unknown / missing model id -> price as the current Opus
 # Cache-write multipliers, relative to the model's input rate. The cache-READ
 # multiplier is per tier: RATES[key]["read"].
 CACHE_WRITE_5M_MULT = 1.25
@@ -89,7 +91,7 @@ CACHE_WRITE_1H_MULT = 2.0
 DEFAULT_IDLE_GAP_S = 300
 
 # Columns shown in the comparison table (order = display order).
-COMPARE = ["sonnet-5", "opus-5", "fable-5-1"]
+COMPARE = ["sonnet-5", "opus-5-5", "fable-5-1"]
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
@@ -121,7 +123,9 @@ def price_key(model_id: str) -> str | None:
     if "opus" in m:
         if major is not None and major <= 4:
             return "opus-4-1" if minor <= 1 else "opus-4"
-        return "opus-5"
+        if major is not None and (major, minor) < (5, 5):
+            return "opus-5"
+        return "opus-5-5"
     if "sonnet" in m:
         return "sonnet-4" if major is not None and major < 5 else "sonnet-5"
     if "haiku" in m:
@@ -423,6 +427,60 @@ def _subagent_files(jsonl_path: Path) -> list[Path]:
     return sorted(subdir.rglob("*.jsonl"))
 
 
+_REMINDER_RE = re.compile(r"(\d[\d,]*)\s*tokens left")
+
+
+def _counter_scan(path: Path) -> tuple[dict[str, int], dict[int, int]]:
+    """Read a subagent transcript's token counter (`total_tokens_reminder` attachments).
+
+    Claude Code often logs only the stream-start `output_tokens` (3-30) of a response,
+    with no `stop_reason` on any of its records — a placeholder, not the final count.
+    After every response the subagent transcript gets a reminder with the remaining
+    token budget, so the real output is:  budget - remaining - (input + cache read +
+    cache write). The budget is derived from the FINAL responses (stop_reason set),
+    where the logged output is exact: budget = remaining + context + output.
+
+    Returns (message id -> measured output without budget applied, i.e. the value
+    `-(remaining + context)`, keyed so the caller adds the budget) and a histogram of
+    budgets seen on final responses. Only the main session's counter runs with an
+    offset, so this is used for subagent transcripts only."""
+    ctx: dict[str, int] = {}
+    out_max: dict[str, int] = {}
+    final: set[str] = set()
+    remaining: dict[str, int] = {}
+    last_id: str | None = None
+    for rec in _iter_records(path):
+        msg = rec.get("message")
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            usage = msg.get("usage")
+            mid = msg.get("id")
+            if isinstance(usage, dict) and mid:
+                last_id = mid
+                ctx[mid] = (
+                    (usage.get("input_tokens", 0) or 0)
+                    + (usage.get("cache_read_input_tokens", 0) or 0)
+                    + (usage.get("cache_creation_input_tokens", 0) or 0)
+                )
+                out_max[mid] = max(out_max.get(mid, 0), usage.get("output_tokens", 0) or 0)
+                if msg.get("stop_reason"):
+                    final.add(mid)
+            continue
+        att = rec.get("attachment")
+        if rec.get("type") == "attachment" and isinstance(att, dict) \
+                and att.get("type") == "total_tokens_reminder" and last_id \
+                and last_id not in remaining:
+            m = _REMINDER_RE.search(att.get("text") or "")
+            if m:
+                remaining[last_id] = int(m.group(1).replace(",", ""))
+    budgets: dict[int, int] = {}
+    for mid in final:
+        if mid in remaining:
+            b = remaining[mid] + ctx[mid] + out_max[mid]
+            budgets[b] = budgets.get(b, 0) + 1
+    partial = {mid: -(remaining[mid] + ctx[mid]) for mid in remaining if mid in ctx}
+    return partial, budgets
+
+
 def analyze_session(jsonl_path: Path, since_dt: datetime, until_dt: datetime,
                     idle_gap_s: int = DEFAULT_IDLE_GAP_S) -> dict:
     """Parse one session .jsonl into token buckets and metadata, counting ONLY the
@@ -549,7 +607,20 @@ def analyze_session(jsonl_path: Path, since_dt: datetime, until_dt: datetime,
 
     # Separate subagent transcript files (<project>/<session-id>/...): count their
     # in-window tokens too, always as subagents. They never affect main-model dominance.
-    for sub_path in _subagent_files(jsonl_path):
+    # Their output is corrected from the token counter (see _counter_scan): the budget
+    # is the file's own most common one, else the session's (a short subagent may have
+    # no final response at all); with no known budget the logged value stays.
+    sub_paths = _subagent_files(jsonl_path)
+    scans = {p: _counter_scan(p) for p in sub_paths}
+    session_budgets: dict[int, int] = {}
+    for _, b in scans.values():
+        for k, v in b.items():
+            session_budgets[k] = session_budgets.get(k, 0) + v
+    for sub_path in sub_paths:
+        partial, file_budgets = scans[sub_path]
+        hist = file_budgets or session_budgets
+        budget = max(hist, key=hist.get) if hist else None
+        window_ids: dict[str, str] = {}  # in-window message id -> price key
         try:
             sub_mtime = datetime.fromtimestamp(sub_path.stat().st_mtime)
         except OSError:
@@ -579,7 +650,17 @@ def analyze_session(jsonl_path: Path, since_dt: datetime, until_dt: datetime,
                 n_assistant += 1
                 n_subagent += 1
             key = price_key(msg.get("model", "")) or DEFAULT_KEY
+            if msg.get("id"):
+                window_ids[msg["id"]] = key
             count(u, key, is_sub=True)
+        if budget is not None:
+            for mid, key in window_ids.items():
+                if mid not in partial:
+                    continue
+                extra = budget + partial[mid] - counted_out.get(mid, 0)
+                if extra > 0:  # never below the logged value
+                    counted_out[mid] += extra
+                    count({"output_tokens": extra}, key, is_sub=True)
         if sub_active:
             n_agents += 1  # one transcript file = one agent run
 
@@ -759,7 +840,7 @@ def _core_row(s: dict, name_width: int) -> list[str]:
         fmt_tokens(b["w5"] + b["w1"]),
         f"{hr * 100:.0f}%" if hr is not None else "-",
         _cost_cell(s, "sonnet-5"),
-        _cost_cell(s, "opus-5"),
+        _cost_cell(s, "opus-5-5"),
         _cost_cell(s, "fable-5-1"),
         fmt_usd(s["actual_cost"]),
     ]
@@ -808,7 +889,7 @@ def print_report(sessions: list[dict], scope_label: str, show_project: bool,
         fmt_tokens(tb["w5"] + tb["w1"]),
         f"{thr * 100:.0f}%" if thr is not None else "-",
         fmt_usd(tot_cmp["sonnet-5"]),
-        fmt_usd(tot_cmp["opus-5"]),
+        fmt_usd(tot_cmp["opus-5-5"]),
         fmt_usd(tot_cmp["fable-5-1"]),
         fmt_usd(tot_actual),
     ]
@@ -847,8 +928,8 @@ def print_report(sessions: list[dict], scope_label: str, show_project: bool,
             f"${inp * CACHE_WRITE_1H_MULT:.2f}",
         ]))
     print()
-    print("Cost = input×in-rate + output×out-rate + cache-read×(10% in, 2.5% on "
-          "Fable 5.1) + cache-write×(1.25–2× in). List pricing; billing is")
+    print("Cost = input×in-rate + output×out-rate + cache-read×(10% in, 5% on "
+          "Opus 5.5, 2.5% on Fable 5.1) + cache-write×(1.25–2× in). List pricing; billing is")
     print("covered by your subscription.")
 
 
@@ -937,7 +1018,7 @@ def to_markdown(sessions: list[dict], scope_label: str, show_project: bool,
             fmt_tokens(b["w5"] + b["w1"]),
             f"{hr * 100:.0f}%" if hr is not None else "–",
             cost_md(s, "sonnet-5"),
-            cost_md(s, "opus-5"),
+            cost_md(s, "opus-5-5"),
             cost_md(s, "fable-5-1"),
             fmt_usd(s["actual_cost"]),
         ]
@@ -963,7 +1044,7 @@ def to_markdown(sessions: list[dict], scope_label: str, show_project: bool,
         f"**{fmt_tokens(tb['in'])}**", f"**{fmt_tokens(tb['out'])}**",
         f"**{fmt_tokens(tb['read'])}**", f"**{fmt_tokens(tb['w5'] + tb['w1'])}**",
         f"**{thr * 100:.0f}%**" if thr is not None else "–",
-        f"**{fmt_usd(tot_cmp['sonnet-5'])}**", f"**{fmt_usd(tot_cmp['opus-5'])}**",
+        f"**{fmt_usd(tot_cmp['sonnet-5'])}**", f"**{fmt_usd(tot_cmp['opus-5-5'])}**",
         f"**{fmt_usd(tot_cmp['fable-5-1'])}**", f"**{fmt_usd(tot_actual)}**",
     ]
     if show_project:
@@ -981,7 +1062,7 @@ def to_markdown(sessions: list[dict], scope_label: str, show_project: bool,
         "API-equivalent list pricing — actual billing is covered by your subscription._",
         "",
         "**Pricing used** (USD per 1M tokens — input and output priced separately; "
-        "cache read = 10% of input — 2.5% on Fable 5.1 —, cache write = 1.25× input "
+        "cache read = 10% of input — 5% on Opus 5.5, 2.5% on Fable 5.1 —, cache write = 1.25× input "
         "for 5m TTL / 2× for 1h TTL):",
         "",
         "| Model | Input | Output | Cache read | Cache write 5m | Cache write 1h |",
@@ -998,7 +1079,7 @@ def to_markdown(sessions: list[dict], scope_label: str, show_project: bool,
         )
     lines.append(
         "\n_Cost per session = input×in-rate + output×out-rate + "
-        "cache-read×(10% in-rate, 2.5% on Fable 5.1) + "
+        "cache-read×(10% in-rate, 5% on Opus 5.5, 2.5% on Fable 5.1) + "
         "cache-write×(1.25–2× in-rate)._"
     )
     return "\n".join(lines)

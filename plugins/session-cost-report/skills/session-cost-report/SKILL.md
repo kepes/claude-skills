@@ -1,6 +1,6 @@
 ---
 name: session-cost-report
-description: Per-session token, cost & time summary for a Claude Code project. Reads the project's recent session logs and reports, per session, how many tokens it used and what it would cost on Sonnet 5 / Opus 5 / Fable 5.1 — marking the model the session actually ran on — plus the real mixed cost (main model + subagents), the wall-clock span (how long the session ran, first→last event), and an estimated active working time (how long the LLM actually worked, idle pauses removed). Use when the user wants a token usage report, session cost breakdown, model cost comparison, session duration / how long a session took / how long Claude worked, or asks "how much did this session cost" / "how many tokens did I use" / "how long did this session run" / "what would this have cost on Sonnet/Fable". Defaults to the current project; supports "all projects" (összes projekt) with a project column, sorting by token count or by cost (rendezve token szám / költség szerint), and a configurable session count ("mutasd mindet" / "30-at"). Defaults to today but takes any time window ("elmúlt két nap", "elmúlt két óra", "ma három óra után", "tegnap"). Triggers (HU): "token összesítő", "token riport", "session költség", "mennyibe került a session", "mennyi tokent használtam", "költség összevetés", "mennyibe került volna Sonneten/Fable-ön", "token report", "összes projekt token", "rendezve token használat", "melyik projekt vitte a legtöbb tokent", "meddig futott a session", "mennyi ideig tartott", "mennyit dolgozott rajta a Claude", "session időtartam". Triggers (EN): "token usage report", "session cost", "how much did this cost", "cost per session", "token summary", "compare model cost", "token usage across all projects", "sort sessions by token usage", "how long did the session run", "session duration", "how long did Claude work on this". Triggered with /session-cost-report.
+description: Per-session token, cost & time summary for a Claude Code project. Reads the project's recent session logs and reports, per session, how many tokens it used and what it would cost on Sonnet 5 / Opus 5.5 / Fable 5.1 — marking the model the session actually ran on — plus the real mixed cost (main model + subagents), the wall-clock span (how long the session ran, first→last event), and an estimated active working time (how long the LLM actually worked, idle pauses removed). Use when the user wants a token usage report, session cost breakdown, model cost comparison, session duration / how long a session took / how long Claude worked, or asks "how much did this session cost" / "how many tokens did I use" / "how long did this session run" / "what would this have cost on Sonnet/Fable". Defaults to the current project; supports "all projects" (összes projekt) with a project column, sorting by token count or by cost (rendezve token szám / költség szerint), and a configurable session count ("mutasd mindet" / "30-at"). Defaults to today but takes any time window ("elmúlt két nap", "elmúlt két óra", "ma három óra után", "tegnap"). Triggers (HU): "token összesítő", "token riport", "session költség", "mennyibe került a session", "mennyi tokent használtam", "költség összevetés", "mennyibe került volna Sonneten/Fable-ön", "token report", "összes projekt token", "rendezve token használat", "melyik projekt vitte a legtöbb tokent", "meddig futott a session", "mennyi ideig tartott", "mennyit dolgozott rajta a Claude", "session időtartam". Triggers (EN): "token usage report", "session cost", "how much did this cost", "cost per session", "token summary", "compare model cost", "token usage across all projects", "sort sessions by token usage", "how long did the session run", "session duration", "how long did Claude work on this". Triggered with /session-cost-report.
 ---
 
 # Session token & cost report
@@ -20,7 +20,7 @@ single table, one row per session (plus a TOTAL row). Columns:
 | `IN` / `OUT` | Uncached input / output tokens |
 | `CACHE-R` / `CACHE-W` | Cache read / write tokens (input-side only) |
 | `HIT` | Cache read as % of input (cache efficiency) |
-| `SONNET` / `OPUS` / `FABLE` | Est. cost if the **whole** session ran on the current model of that family (Sonnet 5 / Opus 5 / Fable 5.1); `*` marks the family it actually ran on |
+| `SONNET` / `OPUS` / `FABLE` | Est. cost if the **whole** session ran on the current model of that family (Sonnet 5 / Opus 5.5 / Fable 5.1); `*` marks the family it actually ran on |
 | `ACTUAL` | Real **mixed** cost — each model's tokens priced at its own rate |
 
 The terminal table is ~157 chars wide (~174 with the PROJECT column). The cache-write
@@ -164,6 +164,15 @@ session, or which project burned the most today).
   (input, cache read, cache write) is identical across the records of one id; only
   `output_tokens` grows while the response streams, so a later record contributes just
   the output tokens that are new.
+- **Subagent output is corrected from Claude Code's token counter.** Often the log keeps
+  only the stream-start `output_tokens` (3–30) of a response — no record of it has a
+  `stop_reason` — so long thinking turns are undercounted by 10–1000×. Every subagent
+  response is followed by a `total_tokens_reminder` attachment with the remaining
+  budget, so the real output = budget − remaining − (input + cache read + cache write).
+  The budget comes from the final (`stop_reason`-bearing) responses, per file, else the
+  session's most common one; with no known budget the logged value stays. The result is
+  never below the logged value. The main session's counter runs with an offset, so
+  main-session output stays as logged (its responses are usually final anyway).
 - The session's **main model** = the dominant model among non-sidechain messages.
 - Metadata comes from the log too: the session **name** from the latest `ai-title`
   record (falling back to a truncated last prompt, then "untitled"); message counts from
@@ -180,12 +189,13 @@ session, or which project burned the most today).
 
 List pricing per 1M tokens. Source: the
 [official pricing page](https://platform.claude.com/docs/en/about-claude/pricing),
-checked 2026-09-06.
+checked 2026-09-24.
 
 | Price key | Model | input | output | cache read |
 |---|---|---|---|---|
 | `sonnet-5` | Sonnet 5 | $2 | $10 | $0.20 |
 | `sonnet-4` | Sonnet 4.5 / 4.6 | $3 | $15 | $0.30 |
+| `opus-5-5` | Opus 5.5 | $4 | $20 | $0.20 |
 | `opus-5` | Opus 5 | $5 | $25 | $0.50 |
 | `opus-4` | Opus 4.5 – 4.8 | $5 | $25 | $0.50 |
 | `opus-4-1` | Opus 4 / 4.1 (retired) | $15 | $75 | $1.50 |
@@ -194,18 +204,19 @@ checked 2026-09-06.
 | `haiku-4-5` | Haiku 4.5 | $1 | $5 | $0.10 |
 
 **Pricing is version-aware.** A key is a price tier, not a model family. Versions of one
-family no longer share a rate: Sonnet 5 costs less than Sonnet 4.6, and Fable 5.1 reads
-its cache at 2.5% of the input price while every other model pays 10%. The script maps a
+family no longer share a rate: Sonnet 5 costs less than Sonnet 4.6, Opus 5.5 costs less
+than Opus 5, Opus 5.5 reads its cache at 5% and Fable 5.1 at 2.5% of the input price,
+while every other model pays 10%. The script maps a
 raw model id (`claude-opus-4-8[1m]`, `claude-haiku-4-5-20251001`) to a key with
 `price_key()`; an id without a version (bare `sonnet`) gets the current model of that
-family, and an unknown id is priced as Opus 5.
+family, and an unknown id is priced as Opus 5.5.
 
-- Cache **reads** are billed at **10%** of the input rate — **2.5%** on Fable 5.1 and
-  Mythos 5.1.
+- Cache **reads** are billed at **10%** of the input rate — **5%** on Opus 5.5, **2.5%**
+  on Fable 5.1 and Mythos 5.1.
 - Cache **writes** at **1.25×** (5-minute TTL) or **2×** (1-hour TTL) of the input rate
   — the logs carry the `ephemeral_5m` / `ephemeral_1h` breakdown, so this is exact.
 - The three comparison columns reprice **all** of the session's tokens at the **current**
-  model of that family ("what if everything ran on Sonnet 5 / Opus 5 / Fable 5.1").
+  model of that family ("what if everything ran on Sonnet 5 / Opus 5.5 / Fable 5.1").
 - The **actual (mixed)** number prices each model's tokens at its own version's rate —
   this is the honest "what it actually cost", and differs from the marked column whenever
   subagents ran on a different model, or the main loop ran on an older version.
